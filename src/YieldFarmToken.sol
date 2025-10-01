@@ -14,15 +14,17 @@ contract YieldFarmToken is ERC20("Yield Farm Token", "YFT"), Ownable(msg.sender)
 
     modifier onlyMinter() {
         require(minters[msg.sender], "Not authorized to mint");
-        _;
+        _; 
     }
     
     function mint(address to, uint256 amount) external onlyMinter {
         _mint(to, amount);
     }
+    // @audit-info is it safe to have multiple minters?
+    // @audit-info is the visibility supposed to be external?
     
     function addMinter(address minter) external onlyOwner {
-        minters[minter] = true;
+        minters[minter] = true; 
     }
     
     function removeMinter(address minter) external onlyOwner {

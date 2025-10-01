@@ -96,7 +96,7 @@ contract MultiTokenYieldFarm is Ownable(msg.sender), ReentrancyGuard, Pausable {
         require(_depositFee <= 1000, "Deposit fee too high"); // Max 10%
         require(_withdrawFee <= 1000, "Withdraw fee too high"); // Max 10%
         
-        if (_withUpdate) {
+        if (_withUpdate) { 
             massUpdatePools();
         }
         
@@ -107,7 +107,7 @@ contract MultiTokenYieldFarm is Ownable(msg.sender), ReentrancyGuard, Pausable {
             stakingToken: _stakingToken,
             allocPoint: _allocPoint,
             lastRewardBlock: lastRewardBlock,
-            accRewardPerShare: 0,
+            accRewardPerShare: 0, //@audit-info is this supposed to be hardcoded?
             depositFee: _depositFee,
             withdrawFee: _withdrawFee,
             minStakeTime: _minStakeTime,
@@ -133,7 +133,7 @@ contract MultiTokenYieldFarm is Ownable(msg.sender), ReentrancyGuard, Pausable {
             bonusToken: _bonusToken,
             bonusPerBlock: _bonusPerBlock,
             bonusEndBlock: _bonusEndBlock,
-            accBonusPerShare: 0
+            accBonusPerShare: 0 //@audit-info is this supposed to be hardcoded?
         });
         
         emit BonusTokenSet(_pid, address(_bonusToken), _bonusPerBlock, _bonusEndBlock);
@@ -146,17 +146,17 @@ contract MultiTokenYieldFarm is Ownable(msg.sender), ReentrancyGuard, Pausable {
         PoolInfo storage pool = poolInfo[_pid];
         if (block.number <= pool.lastRewardBlock) {
             return;
-        }
+        } // 
         
         uint256 stakingSupply = pool.stakingToken.balanceOf(address(this));
         if (stakingSupply == 0) {
             pool.lastRewardBlock = block.number;
             return;
-        }
+        } //
         
         uint256 multiplier = block.number - pool.lastRewardBlock;
         uint256 reward = (multiplier * rewardPerBlock * pool.allocPoint) / totalAllocPoint;
-        
+        // @audit-info 
         // Mint rewards
         rewardToken.mint(address(this), reward);
         rewardToken.mint(feeCollector, reward / 10); // 10% dev fee
@@ -183,7 +183,7 @@ contract MultiTokenYieldFarm is Ownable(msg.sender), ReentrancyGuard, Pausable {
     function deposit(uint256 _pid, uint256 _amount, address _referrer) external nonReentrant whenNotPaused {
         require(_pid < poolLength, "Invalid pool ID");
         require(_amount > 0, "Amount must be greater than 0");
-        
+        // 
         PoolInfo storage pool = poolInfo[_pid];
         UserInfo storage user = userInfo[_pid][msg.sender];
         

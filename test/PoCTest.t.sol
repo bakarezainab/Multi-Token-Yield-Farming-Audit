@@ -99,196 +99,128 @@ contract PoCTest is Test {
     }
 
     // ============ Basic Functionality Tests ============
-    function testInitialState() public {
-        assertEq(farm.poolLength(), 2);
-        assertEq(farm.rewardPerBlock(), INITIAL_REWARD_PER_BLOCK);
-        assertEq(farm.startBlock(), START_BLOCK);
-        assertEq(farm.totalAllocPoint(), 1500);
+    function testRewardDistributionMismatch() public {
+    console.log("=== Testing Incorrect Reward Distribution ===");
+    
+    vm.roll(START_BLOCK + 1);
 
-        (IERC20 stakingToken, uint256 allocPoint,,,,,,) = farm.poolInfo(0);
-        assertEq(address(stakingToken), address(lpToken1));
-        assertEq(allocPoint, 1000);
-    }
-    function testBasicDeposit() public {
-        vm.roll(START_BLOCK + 1);
-
-        uint256 depositAmount = 100e18;
-        uint256 initialBalance = lpToken1.balanceOf(alice);
-
-        vm.startPrank(alice);
-        vm.expectEmit(true, true, false, true);
-        emit Deposit(alice, 0, depositAmount);
-
-        farm.deposit(0, depositAmount, address(0));
-        vm.stopPrank();
-
-        // Check balances
-        assertEq(lpToken1.balanceOf(alice), initialBalance - depositAmount);
-        assertEq(lpToken1.balanceOf(address(farm)), depositAmount);
-
-        // Check user info
-        (uint256 amount, uint256 rewardDebt, uint256 bonusRewardDebt, uint256 lastDepositTime, address referrer,) =
-            farm.userInfo(0, alice);
-
-        assertEq(amount, depositAmount);
-        assertEq(rewardDebt, 0); // First deposit has no pending rewards
-        assertEq(lastDepositTime, block.timestamp);
-        assertEq(referrer, address(0));
-    }
-    function testBasicWithdraw() public {
-        // First deposit
-        vm.roll(START_BLOCK + 1);
-        vm.prank(alice);
-        farm.deposit(0, 100e18, address(0));
-
-        // Fast forward some blocks and time
-        vm.roll(START_BLOCK + 10);
-        vm.warp(block.timestamp + 10 days);
-
-        uint256 withdrawAmount = 50e18;
-        uint256 initialBalance = lpToken1.balanceOf(alice);
-        uint256 initialRewardBalance = rewardToken.balanceOf(alice);
-
-        vm.startPrank(alice);
-        vm.expectEmit(true, true, false, true);
-        emit Withdraw(alice, 0, withdrawAmount);
-
-        farm.withdraw(0, withdrawAmount);
-        vm.stopPrank();
-
-        // Check LP token balance
-        assertEq(lpToken1.balanceOf(alice), initialBalance + withdrawAmount);
-
-        // Check reward tokens received
-        assertGt(rewardToken.balanceOf(alice), initialRewardBalance);
-
-        // Check remaining staked amount
-        (uint256 amount,,,,,) = farm.userInfo(0, alice);
-        assertEq(amount, 50e18);
+    // Alice deposits tokens
+    uint256 depositAmount = 1000e18;
+    vm.prank(alice);
+    farm.deposit(0, depositAmount, address(0));
+    
+    // Advance 100 blocks
+    uint256 currentBlock = block.number;
+    vm.roll(currentBlock + 100);
+    
+    console.log("Blocks advanced: 100");
+    console.log("From block:", currentBlock, "to block:", block.number);
+    
+    // Calculate expected rewards mathematically
+    // Since we have 2 pools with allocPoints 1000 and 500, totalAllocPoint = 1500
+    uint256 expectedRewards = (100 * INITIAL_REWARD_PER_BLOCK * 1000) / farm.totalAllocPoint();
+    
+    console.log("Expected rewards for pool (100%):", expectedRewards);
+    console.log("Expected dev fee (10%):", expectedRewards / 10);
+    console.log("Expected total minted (110%):", expectedRewards + (expectedRewards / 10));
+    
+    // Update pool to mint rewards
+    farm.updatePool(0);
+    
+    // Check actual token balances
+    uint256 poolRewardBalance = rewardToken.balanceOf(address(farm));
+    uint256 feeCollectorBalance = rewardToken.balanceOf(feeCollector);
+    uint256 totalMinted = poolRewardBalance + feeCollectorBalance;
+    
+    console.log("\nActual results:");
+    console.log("Pool reward balance:", poolRewardBalance);
+    console.log("Fee collector balance:", feeCollectorBalance);
+    console.log("Total minted tokens:", totalMinted);
+    
+    // Verify the mathematical inconsistency
+    console.log("\n=== Mathematical Inconsistency ===");
+    console.log("Pool has", poolRewardBalance, "tokens but accRewardPerShare accounts for", expectedRewards);
+    console.log("Difference:", expectedRewards - poolRewardBalance);
+    
+    // The core issue: accRewardPerShare is calculated using 100% but dev fee reduces effective pool rewards
+    assertEq(totalMinted, expectedRewards + (expectedRewards / 10), "Total minted should be 110% of calculated rewards");
+    assertEq(poolRewardBalance, expectedRewards, "Pool should have exactly the calculated rewards (100%)");
+    
+    // Check what happens when user tries to claim rewards
+    (uint256 pendingPrimary, ) = farm.pendingRewards(0, alice);
+    console.log("\nUser pending rewards (with time multiplier):", pendingPrimary);
+    
+    // The bug becomes apparent in the accounting - users expect rewards based on 100% calculation
+    // but the effective reward pool is reduced by the dev fee
     }
 
-    function testEmergencyWithdrawEdgeCases() public {
-        vm.roll(START_BLOCK + 1);
+    function testUninitializedBonusRewardDebt() public {
+    console.log("=== Testing Uninitialized Bonus Reward Debt Bug ===");
+    
+    vm.roll(START_BLOCK + 1);
 
-        // Alice deposits
-        vm.prank(alice);
-        farm.deposit(0, 100e18, address(0));
+    // Step 1: Alice deposits BEFORE bonus token is set
+    console.log("\n1. Alice deposits 1000 tokens BEFORE bonus token is set");
+    vm.prank(alice);
+    farm.deposit(0, 1000e18, address(0));
+    
+    // Check Alice's initial state - bonusRewardDebt should be 0 (uninitialized)
+    (, , uint256 aliceInitialBonusDebt,,,) = farm.userInfo(0, alice);
+    console.log("Alice's initial bonusRewardDebt:", aliceInitialBonusDebt);
+    assertEq(aliceInitialBonusDebt, 0, "Alice's bonusRewardDebt should be 0 (uninitialized)");
 
-        // Fast forward to accrue rewards
-        vm.roll(START_BLOCK + 10);
+    // Step 2: Advance some blocks (no bonus token yet)
+    console.log("\n2. Advance 50 blocks (no bonus token active)");
+    vm.roll(block.number + 50);
 
-        uint256 aliceInitialBalance = lpToken1.balanceOf(alice);
-        uint256 initialRewardBalance = rewardToken.balanceOf(alice);
+    // Step 3: Set bonus token NOW (after Alice already deposited)
+    console.log("\n3. Set bonus token AFTER Alice deposited");
+    uint256 bonusStartBlock = block.number;
+    uint256 bonusEndBlock = bonusStartBlock + 100;
+    
+    // Approve bonus tokens for the farm
+    bonusToken.approve(address(farm), type(uint256).max);
+    farm.setBonusToken(0, bonusToken, 10e18, bonusEndBlock);
 
-        // Emergency withdraw
-        vm.prank(alice);
-        farm.emergencyWithdraw(0);
+    // Step 4: Advance more blocks to accumulate bonus rewards
+    console.log("\n4. Advance 50 blocks to accumulate bonus rewards");
+    vm.roll(block.number + 50);
 
-        uint256 aliceAfterBalance = lpToken1.balanceOf(alice);
-        uint256 afterRewardBalance = rewardToken.balanceOf(alice);
+    // Step 5: Bob deposits AFTER bonus token is set (for comparison)
+    console.log("\n5. Bob deposits 1000 tokens AFTER bonus token is set");
+    vm.prank(bob);
+    farm.deposit(0, 1000e18, address(0));
 
-        // Check that no rewards were paid
-        assertEq(afterRewardBalance, initialRewardBalance);
+    // Check Bob's state - bonusRewardDebt should be initialized
+    (, , uint256 bobBonusDebt,,,) = farm.userInfo(0, bob);
+    console.log("Bob's initial bonusRewardDebt:", bobBonusDebt);
+    assertGt(bobBonusDebt, 0, "Bob's bonusRewardDebt should be initialized");
 
-        // Check fee was applied (15% emergency fee)
-        uint256 expectedWithdraw = 100e18 - (100e18 * 1500) / 10000; // 85e18
-        assertEq(aliceAfterBalance - aliceInitialBalance, expectedWithdraw);
+    // Step 6: Check pending bonus rewards for both users
+    console.log("\n6. Check pending bonus rewards for both users");
+    (, uint256 alicePendingBonus) = farm.pendingRewards(0, alice);
+    (, uint256 bobPendingBonus) = farm.pendingRewards(0, bob);
+    
+    console.log("Alice's pending bonus rewards:", alicePendingBonus);
+    console.log("Bob's pending bonus rewards:", bobPendingBonus);
 
-        // Check user state is properly reset
-        (uint256 amount, uint256 rewardDebt, uint256 bonusRewardDebt,,,) = farm.userInfo(0, alice);
-        assertEq(amount, 0);
-        assertEq(rewardDebt, 0);
-        assertEq(bonusRewardDebt, 0);
-    }
-
-    function testZeroStakingSupplyDivisionByZero() public {
-        // Test edge case where pool has zero staking supply
-        vm.roll(START_BLOCK + 1);
-
-        // Try to update a pool with no deposits
-        farm.updatePool(0);
-        // This should handle division by zero gracefully
-        (,, uint256 lastRewardBlock, uint256 accRewardPerShare,,,,) = farm.poolInfo(0);
-
-        assertEq(lastRewardBlock, block.number);
-        assertEq(accRewardPerShare, 0); // Should remain 0, not cause revert
-    }
-
-
-    function testMinimalAmounts() public {
-        vm.roll(START_BLOCK + 1);
-
-        // Test with 1 wei deposit
-        vm.prank(alice);
-        farm.deposit(0, 1, address(0));
-
-        vm.roll(START_BLOCK + 100);
-
-        // Check if rewards are calculated correctly for tiny amounts
-        (uint256 pending,) = farm.pendingRewards(0, alice);
-        console.log("Pending rewards for 1 wei deposit:", pending);
-
-        // Withdraw the 1 wei
-        vm.prank(alice);
-        farm.withdraw(0, 1);
-    }
-
-    function testMaximumDeposits() public {
-        vm.roll(START_BLOCK + 1);
-
-        // Test with maximum possible deposit
-        uint256 maxDeposit = type(uint256).max / 2; 
-        lpToken1.mint(alice, maxDeposit);
-
-        vm.prank(alice);
-
-        try farm.deposit(0, maxDeposit, address(0)) {
-            console.log("Maximum deposit succeeded");
-        } catch {
-            console.log("Maximum deposit failed - potential overflow protection");
-        }
-    }
-
-    function testBonusTokenExpiration() public {
-        vm.roll(START_BLOCK + 1);
-
-        // Set bonus token that expires soon
-        bonusToken.approve(address(farm), type(uint256).max);
-        farm.setBonusToken(0, bonusToken, 10e18, START_BLOCK + 50);
-
-        // Alice deposits
-        vm.prank(alice);
-        farm.deposit(0, 100e18, address(0));
-
-        // Fast forward past bonus expiration
-        vm.roll(START_BLOCK + 100);
-
-        // Check bonus rewards stop accruing
-        (uint256 pending, uint256 bonusPending) = farm.pendingRewards(0, alice);
-
-        console.log("Primary pending after bonus expiration:", pending);
-        console.log("Bonus pending after expiration:", bonusPending);
-
-    }
-
-    function testPendingRewardsCalculation() public {
-        vm.roll(START_BLOCK + 1);
-
-        vm.prank(alice);
-        farm.deposit(0, 100e18, address(0));
-
-        vm.roll(START_BLOCK + 10);
-
-        (uint256 pending,) = farm.pendingRewards(0, alice);
-
-        // Manual calculation
-        uint256 blocks = 9; // 9 blocks of rewards
-        uint256 expectedReward = (blocks * INITIAL_REWARD_PER_BLOCK * 1000) / 1500; // Pool 0 allocation
-
-        console.log("Calculated pending:", pending);
-        console.log("Expected reward:", expectedReward);
-
-        // Should be close (within rounding errors)
-        assertApproxEqRel(pending, expectedReward, 0.01e18); // 1% tolerance
-    }
+    // Step 7: Analyze the vulnerability
+    console.log("\n=== VULNERABILITY ANALYSIS ===");
+    console.log("Alice deposited BEFORE bonus token was set");
+    console.log("Bob deposited AFTER bonus token was set");
+    console.log("Both have the same amount staked (1000 tokens)");
+    console.log("Alice pending bonus:", alicePendingBonus);
+    console.log("Bob pending bonus:", bobPendingBonus);
+    
+    // The bug: Alice gets bonus rewards even though bonus wasn't active when she deposited
+    assertGt(alicePendingBonus, 0, "Alice should have pending bonus (BUG!)");
+    
+    console.log("\nBUG CONFIRMED: Alice receives bonus rewards despite depositing before bonus was active!");
+    console.log("This happens because her bonusRewardDebt was 0 when bonus token was set.");
 }
+
+
+
+    
+}
+

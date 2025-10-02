@@ -284,5 +284,5 @@ contract YieldFarmTest is Test {
 
         // Should be close (within rounding errors)
         assertApproxEqRel(pending, expectedReward, 0.01e18); // 1% tolerance
-    }
+    }    
 }

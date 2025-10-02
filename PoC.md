@@ -1,18 +1,17 @@
 # MULTI-TOKEN YIELD FARMING AUDIT
 ## Executive Summary
-A comprehensive security audit of the MultiTokenYieldFarm and YieldFarmToken contracts revealed multiple critical vulnerabilities that could lead to fund loss, incorrect reward distribution, and potential contract exploitation. The most severe issue involves incorrect reward distribution mathematics that systematically underfunds user rewards.
+A comprehensive security audit of the `MultiTokenYieldFarm` and `YieldFarmToken` contracts revealed multiple critical vulnerabilities that could lead to fund loss, incorrect reward distribution, and potential contract exploitation.
 
 ## Contracts Audited
 - MultiTokenYieldFarm.sol - Main yield farming contract
 
 - YieldFarmToken.sol - Reward token contract
 
-# Critical Issues
-1. Incorrect Reward Distribution Mathematics
+## 1. Incorrect Reward Distribution Mathematics
 Severity: CRITICAL
 
-## Description:
-The updatePool function mints 110% of calculated rewards (100% to pool + 10% dev fee) but only accounts for 100% in accRewardPerShare. This creates a fundamental mathematical inconsistency where the contract mints more tokens than it accounts for in reward distribution.
+### Description:
+The `updatePool` function mints 110% of calculated rewards (100% to pool + 10% dev fee) but only accounts for 100% in `accRewardPerShare`. This creates a fundamental mathematical inconsistency where the contract mints more tokens than it accounts for in reward distribution.
 
 ## Vulnerable Code:
 
@@ -79,11 +78,145 @@ function updatePool(uint256 _pid) public {
     // ...
 }
 ```
-## 2. Reentrancy Vulnerability in Withdraw Function
+## 2. No Event and Emit in the `add` function
+### Severity: LOW
+
+Description:
+The `add` function performs a critical state-changing operation (creating a new staking pool) but doesn't emit any event. This violates best practices and makes it difficult to track pool creation off-chain.
+
+Vulnerable Code:
+
+```solidity
+function add(uint256 _allocPoint,IERC20 _stakingToken,uint256 _depositFee,uint256 _withdrawFee,uint256 _minStakeTime,bool _withUpdate
+    ) external onlyOwner {
+        ...              
+        uint256 lastRewardBlock = block.number > startBlock ? block.number : startBlock;
+        totalAllocPoint += _allocPoint;        
+        ...
+        poolLength++;
+        // no event emitted
+    }
+```
+
+### Impact:
+
+- Reduces transparency and auditability
+- Makes off-chain monitoring impossible
+- DApps cannot automatically detect new pools
+- No historical record of pool creation
+- Violates blockchain best practices
+
+### Mitigation:
+
+In `MultiTokenYieldFarm.sol`, add the event and emit it in the `add` function
+
+
+## 3. Missing Minting Limits in `YieldFarmToken`
+Severity: MEDIUM
+
+Description:
+The `YieldFarmToken` has no maximum supply cap or minting limits, allowing unlimited inflation.
+
+Vulnerable Code:
+
+```solidity
+function mint(address to, uint256 amount) external onlyMinter {
+    _mint(to, amount); // No limits or caps
+}
+```
+Impact:
+- Unlimited token inflation
+- Complete devaluation of token
+- Centralized control over token supply
+
+Mitigation:
+
+```solidity
+uint256 public constant MAX_SUPPLY = 100000000 * 10**18;
+
+function mint(address to, uint256 amount) external onlyMinter {
+    require(totalSupply() + amount <= MAX_SUPPLY, "Exceeds max supply");
+    _mint(to, amount);
+}
+```
+## 4. Fee-on-Transfer Token Vulnerability
 ### Severity: HIGH
 
 Description:
-The withdraw function makes external calls to transfer bonus tokens before updating user state, violating the checks-effects-interactions pattern.
+The `deposit` function uses balance difference to calculate received amount, which is vulnerable to fee-on-transfer and rebasing tokens.
+
+Vulnerable Code:
+
+```solidity
+function deposit(uint256 _pid, uint256 _amount, address _referrer) external {
+    // ...
+    uint256 balanceBefore = pool.stakingToken.balanceOf(address(this));
+    pool.stakingToken.safeTransferFrom(msg.sender, address(this), _amount);
+    uint256 actualAmount = pool.stakingToken.balanceOf(address(this)) - balanceBefore;
+    // ...
+}
+```
+### Proof of Concept:
+
+```solidity
+// Fee-on-transfer token implementation
+contract FeeOnTransferToken is ERC20 {
+    uint256 public constant FEE = 100; // 1% fee
+    
+    function transferFrom(address sender, address recipient, uint256 amount) 
+        public override returns (bool) {
+        uint256 fee = amount * FEE / 10000;
+        uint256 received = amount - fee;
+        
+        _transfer(sender, recipient, received);
+        _transfer(sender, address(this), fee); // Burn fee
+        return true;
+    }
+}
+
+function testFeeOnTransferExploit() public {
+    FeeOnTransferToken fotToken = new FeeOnTransferToken();
+    fotToken.mint(user1, 1000e18);
+    
+    // Add pool with FOT token
+    yieldFarm.add(1000, fotToken, 0, 0, 0, false);
+    
+    vm.prank(user1);
+    fotToken.approve(address(yieldFarm), 1000e18);
+    
+    // User deposits 1000 tokens
+    yieldFarm.deposit(1, 1000e18, address(0));
+    
+    // Due to fee, only 990 tokens received, but contract calculates based on 1000
+    // This creates accounting mismatch
+}
+```
+### Impact:
+
+- Accounting inconsistencies
+- Potential over-issuance of rewards
+- Contract may become unusable with certain tokens
+
+Mitigation:
+
+```solidity
+function deposit(uint256 _pid, uint256 _amount, address _referrer) external {
+    // ...
+    uint256 balanceBefore = pool.stakingToken.balanceOf(address(this));
+    pool.stakingToken.safeTransferFrom(msg.sender, address(this), _amount);
+    uint256 actualAmount = pool.stakingToken.balanceOf(address(this)) - balanceBefore;
+    
+    require(actualAmount <= _amount, "Received more than sent"); // Sanity check
+    require(actualAmount > 0, "No tokens received");
+    // ...
+}
+```
+
+## 5. Reentrancy Vulnerability in Withdraw Function
+### Severity: HIGH
+
+Description:
+The `withdraw` function makes external calls to transfer bonus tokens before updating user state, violating the checks-effects-interactions pattern.
 
 Vulnerable Code:
 
@@ -156,108 +289,9 @@ function withdraw(uint256 _pid, uint256 _amount) external nonReentrant {
     // ...
 }
 ```
-## 3. Fee-on-Transfer Token Vulnerability
-### Severity: HIGH
 
-Description:
-The deposit function uses balance difference to calculate received amount, which is vulnerable to fee-on-transfer and rebasing tokens.
 
-Vulnerable Code:
-
-```solidity
-function deposit(uint256 _pid, uint256 _amount, address _referrer) external {
-    // ...
-    uint256 balanceBefore = pool.stakingToken.balanceOf(address(this));
-    pool.stakingToken.safeTransferFrom(msg.sender, address(this), _amount);
-    uint256 actualAmount = pool.stakingToken.balanceOf(address(this)) - balanceBefore;
-    // ...
-}
-```
-### Proof of Concept:
-
-```solidity
-// Fee-on-transfer token implementation
-contract FeeOnTransferToken is ERC20 {
-    uint256 public constant FEE = 100; // 1% fee
-    
-    function transferFrom(address sender, address recipient, uint256 amount) 
-        public override returns (bool) {
-        uint256 fee = amount * FEE / 10000;
-        uint256 received = amount - fee;
-        
-        _transfer(sender, recipient, received);
-        _transfer(sender, address(this), fee); // Burn fee
-        return true;
-    }
-}
-
-function testFeeOnTransferExploit() public {
-    FeeOnTransferToken fotToken = new FeeOnTransferToken();
-    fotToken.mint(user1, 1000e18);
-    
-    // Add pool with FOT token
-    yieldFarm.add(1000, fotToken, 0, 0, 0, false);
-    
-    vm.prank(user1);
-    fotToken.approve(address(yieldFarm), 1000e18);
-    
-    // User deposits 1000 tokens
-    yieldFarm.deposit(1, 1000e18, address(0));
-    
-    // Due to fee, only 990 tokens received, but contract calculates based on 1000
-    // This creates accounting mismatch
-}
-```
-### Impact:
-
-- Accounting inconsistencies
-- Potential over-issuance of rewards
-- Contract may become unusable with certain tokens
-
-Mitigation:
-
-```solidity
-function deposit(uint256 _pid, uint256 _amount, address _referrer) external {
-    // ...
-    uint256 balanceBefore = pool.stakingToken.balanceOf(address(this));
-    pool.stakingToken.safeTransferFrom(msg.sender, address(this), _amount);
-    uint256 actualAmount = pool.stakingToken.balanceOf(address(this)) - balanceBefore;
-    
-    require(actualAmount <= _amount, "Received more than sent"); // Sanity check
-    require(actualAmount > 0, "No tokens received");
-    // ...
-}
-```
-## High Severity Issues
-## 4. Missing Minting Limits in YieldFarmToken
-Severity: HIGH
-
-Description:
-The YieldFarmToken has no maximum supply cap or minting limits, allowing unlimited inflation.
-
-Vulnerable Code:
-
-```solidity
-function mint(address to, uint256 amount) external onlyMinter {
-    _mint(to, amount); // No limits or caps
-}
-Impact:
-
-- Unlimited token inflation
-- Complete devaluation of token
-- Centralized control over token supply
-
-Mitigation:
-
-```solidity
-uint256 public constant MAX_SUPPLY = 100000000 * 10**18;
-
-function mint(address to, uint256 amount) external onlyMinter {
-    require(totalSupply() + amount <= MAX_SUPPLY, "Exceeds max supply");
-    _mint(to, amount);
-}
-```
-### 5. Uninitialized Bonus Reward Debt
+### 6. Uninitialized Bonus Reward Debt
 Severity: HIGH
 
 Description:
@@ -292,8 +326,8 @@ function setBonusToken(uint256 _pid, IERC20 _bonusToken, ...) external onlyOwner
     // Store a flag and initialize bonusRewardDebt in deposit/withdraw
 }
 ```
-### Medium Severity Issues
-### 6. Division Before Multiplication Precision Loss
+
+### 7. Division Before Multiplication Precision Loss
 Severity: MEDIUM
 
 Description:
@@ -315,7 +349,7 @@ Mitigation:
 ```solidity
 uint256 reward = (multiplier * rewardPerBlock * pool.allocPoint * 1e18) / totalAllocPoint / 1e18;
 ```
-### 7. Incorrect Time Multiplier Application
+### 8. Incorrect Time Multiplier Application
 Severity: MEDIUM
 
 Description:
@@ -341,7 +375,7 @@ Mitigation:
 // Apply multiplier during reward accumulation in updatePool
 // Based on average staking duration
 ```
-### 8. Missing Access Control on Emergency Functions
+### 9. Missing Access Control on Emergency Functions
 Severity: MEDIUM
 
 Description:
@@ -364,7 +398,7 @@ function emergencyRewardWithdraw(uint256 _amount) external onlyOwner {
 }
 ```
 ### Low Severity Issues
-### 9. Unbounded Loop in massUpdatePools
+### 10. Unbounded Loop in massUpdatePools
 Severity: LOW
 
 Description:
@@ -386,7 +420,7 @@ function massUpdatePools(uint256 start, uint256 end) public {
     }
 }
 ```
-### 10. Missing Events for Critical Operations
+### 11. Missing Events for Critical Operations
 Severity: LOW
 
 Description:
@@ -409,7 +443,7 @@ function mint(address to, uint256 amount) external onlyMinter {
     emit Mint(to, amount);
 }
 ```
-### 11. Division by Zero Risks
+### 12. Division by Zero Risks
 Severity: LOW
 
 Description:

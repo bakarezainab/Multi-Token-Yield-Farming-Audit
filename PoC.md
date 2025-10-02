@@ -8,7 +8,7 @@ A comprehensive security audit of the `MultiTokenYieldFarm` and `YieldFarmToken`
 - YieldFarmToken.sol - Reward token contract
 
 ## 1. Incorrect Reward Distribution Mathematics
-Severity: CRITICAL
+Severity: HIGH  
 
 ### Description:
 The `updatePool` function mints 110% of calculated rewards (100% to pool + 10% dev fee) but only accounts for 100% in `accRewardPerShare`. This creates a fundamental mathematical inconsistency where the contract mints more tokens than it accounts for in reward distribution.
@@ -110,8 +110,30 @@ function add(uint256 _allocPoint,IERC20 _stakingToken,uint256 _depositFee,uint25
 
 In `MultiTokenYieldFarm.sol`, add the event and emit it in the `add` function
 
+## 3. Unbounded Loop in massUpdatePools
+Severity: LOW
 
-## 3. Missing Minting Limits in `YieldFarmToken`
+Description:
+massUpdatePools iterates through all pools without gas limits.
+
+Impact:
+
+Potential gas limit exhaustion
+
+Function may become unusable with many pools
+
+Mitigation:
+
+```solidity
+function massUpdatePools(uint256 start, uint256 end) public {
+    require(end <= poolLength, "End too high");
+    for (uint256 pid = start; pid < end; ++pid) {
+        updatePool(pid);
+    }
+}
+```
+
+## 4. Missing Minting Limits in `YieldFarmToken`
 Severity: MEDIUM
 
 Description:
@@ -139,7 +161,7 @@ function mint(address to, uint256 amount) external onlyMinter {
     _mint(to, amount);
 }
 ```
-## 4. Fee-on-Transfer Token Vulnerability
+## 5. Fee-on-Transfer Token Vulnerability
 ### Severity: HIGH
 
 Description:
@@ -212,7 +234,7 @@ function deposit(uint256 _pid, uint256 _amount, address _referrer) external {
 }
 ```
 
-## 5. Reentrancy Vulnerability in Withdraw Function
+## 6. Reentrancy Vulnerability in Withdraw Function
 ### Severity: HIGH
 
 Description:
@@ -291,7 +313,7 @@ function withdraw(uint256 _pid, uint256 _amount) external nonReentrant {
 ```
 
 
-### 6. Uninitialized Bonus Reward Debt
+### 7. Uninitialized Bonus Reward Debt
 Severity: HIGH
 
 Description:
@@ -327,7 +349,7 @@ function setBonusToken(uint256 _pid, IERC20 _bonusToken, ...) external onlyOwner
 }
 ```
 
-### 7. Division Before Multiplication Precision Loss
+### 8. Division Before Multiplication Precision Loss
 Severity: MEDIUM
 
 Description:
@@ -349,7 +371,7 @@ Mitigation:
 ```solidity
 uint256 reward = (multiplier * rewardPerBlock * pool.allocPoint * 1e18) / totalAllocPoint / 1e18;
 ```
-### 8. Incorrect Time Multiplier Application
+### 9. Incorrect Time Multiplier Application
 Severity: MEDIUM
 
 Description:
@@ -375,7 +397,7 @@ Mitigation:
 // Apply multiplier during reward accumulation in updatePool
 // Based on average staking duration
 ```
-### 9. Missing Access Control on Emergency Functions
+### 10. Missing Access Control on Emergency Functions
 Severity: MEDIUM
 
 Description:
@@ -397,34 +419,12 @@ function emergencyRewardWithdraw(uint256 _amount) external onlyOwner {
     safeRewardTransfer(msg.sender, _amount);
 }
 ```
-### Low Severity Issues
-### 10. Unbounded Loop in massUpdatePools
-Severity: LOW
 
-Description:
-massUpdatePools iterates through all pools without gas limits.
-
-Impact:
-
-Potential gas limit exhaustion
-
-Function may become unusable with many pools
-
-Mitigation:
-
-```solidity
-function massUpdatePools(uint256 start, uint256 end) public {
-    require(end <= poolLength, "End too high");
-    for (uint256 pid = start; pid < end; ++pid) {
-        updatePool(pid);
-    }
-}
-```
 ### 11. Missing Events for Critical Operations
 Severity: LOW
 
 Description:
-YieldFarmToken missing events for minting and minter changes.
+`YieldFarmToken` missing events for minting and minter changes.
 
 ### Impact:
 
@@ -442,17 +442,4 @@ function mint(address to, uint256 amount) external onlyMinter {
     _mint(to, amount);
     emit Mint(to, amount);
 }
-```
-### 12. Division by Zero Risks
-Severity: LOW
-
-Description:
-Multiple locations with potential division by zero.
-
-Mitigation:
-
-```solidity
-// Add checks before division
-require(stakingSupply > 0, "No tokens staked");
-require(totalAllocPoint > 0, "No allocation points");
 ```
